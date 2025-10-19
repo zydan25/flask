@@ -13,6 +13,9 @@ import json
 import os
 import base64
 from collections import deque
+import threading
+import time
+import requests
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
@@ -55,6 +58,34 @@ os.makedirs(QR_IMAGES_DIR, exist_ok=True)
 # =============================================================================
 # ===== Webhook Endpoints =====
 # =============================================================================
+def poll_bot_status():
+    """تقوم بطلب الحالة من البوت كل فترة زمنية محددة"""
+    while True:
+        try:
+            # ضع هنا رابط البوت أو الويبهوك الذي يعطي الحالة
+            bot_url = "https://whts.onrender.com/api/status" # مثال
+            response = requests.get(bot_url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                
+                # تحديث الحالة الداخلية
+                bot_status['status'] = data.get('status', 'unknown')
+                bot_status['isReady'] = data.get('isReady', False)
+                bot_status['hasQR'] = data.get('hasQR', False)
+                bot_status['clientInfo'] = data.get('clientInfo')
+                bot_status['lastUpdate'] = datetime.now().isoformat()
+                
+                # إرسال التحديثات للعملاء
+                socketio.emit('status_update', bot_status)
+                
+                print(f"🔄 تم تحديث الحالة من البوت: {bot_status['status']}")
+            else:
+                print(f"⚠️ فشل جلب الحالة - كود الاستجابة: {response.status_code}")
+                
+        except Exception as e:
+            print(f"❌ خطأ أثناء طلب الحالة: {str(e)}")
+        
+        time.sleep(10)  # الانتظار 10 ثواني قبل الطلب التالي
 
 @app.route('/webhook/qr', methods=['POST'])
 def receive_qr():
@@ -361,6 +392,9 @@ if __name__ == '__main__':
     print('📱 صفحة QR: http://localhost:5000/qr')
     print('=' * 60)
     print('')
-    
+    # تشغيل polling في خيط مستقل
+    status_thread = threading.Thread(target=poll_bot_status, daemon=True)
+    status_thread.start()
+
     # تشغيل الخادم
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
