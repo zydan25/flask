@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 venv/
 ENV/
 build/
@@ -28,10 +27,6 @@ instance/
 .webassets-cache
 
 # QR Images
-qr_images/
-*.png
-*.jpg
-*.jpeg
 
 # IDE
 .vscode/
