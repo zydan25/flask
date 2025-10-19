@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}لوحة التحكم - بوت واتساب{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- حالة البوت -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="fas fa-robot"></i> حالة البوت
+                </h5>
+                <hr>
+                <div id="bot-status-content">
+                    <div class="text-center py-4">
+                        <div class="loading"></div>
+                        <p class="mt-3">جاري التحميل...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- معلومات العميل -->
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    <i class="fas fa-user"></i> معلومات الحساب
+                </h5>
+                <hr>
+                <div id="client-info-content">
+                    <div class="text-center py-4 text-muted">
+                        <i class="fas fa-user-slash fa-3x mb-3"></i>
+                        <p>لا توجد معلومات متاحة</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- الإحصائيات -->
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <i class="fas fa-comments fa-2x text-primary mb-3"></i>
+                <div class="stat-number" id="total-messages">0</div>
+                <div class="stat-label">إجمالي الرسائل</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <i class="fas fa-calendar-day fa-2x text-success mb-3"></i>
+                <div class="stat-number" id="messages-today">0</div>
+                <div class="stat-label">رسائل اليوم</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <i class="fas fa-qrcode fa-2x text-warning mb-3"></i>
+                <div class="stat-number" id="qr-scans">0</div>
+                <div class="stat-label">مسح QR</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- آخر الرسائل -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-inbox"></i> آخر الرسائل
+                    </h5>
+                    <a href="/messages" class="btn btn-sm btn-primary">
+                        عرض الكل <i class="fas fa-arrow-left"></i>
+                    </a>
+                </div>
+                <hr>
+                <div id="recent-messages">
+                    <div class="text-center py-4 text-muted">
+                        <i class="fas fa-inbox fa-3x mb-3"></i>
+                        <p>لا توجد رسائل بعد</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- QR Code Modal -->
+<div class="modal fade" id="qrModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-qrcode"></i> مسح QR Code
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center">
+                <div id="qr-modal-content">
+                    <div class="loading"></div>
+                    <p class="mt-3">جاري التحميل...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentStatus = null;
+    
+    // تحديث حالة البوت
+    socket.on('status_update', function(status) {
+        currentStatus = status;
+        updateBotStatus(status);
+    });
+    
+    // تحديث الإحصائيات
+    socket.on('stats_update', function(stats) {
+        updateStats(stats);
+    });
+    
+    // رسالة جديدة
+    socket.on('new_message', function(message) {
+        addRecentMessage(message);
+    });
+    
+    // تحديث QR
+    socket.on('qr_update', function(data) {
+        if (currentStatus && currentStatus.status === 'qr') {
+            showQRModal(data.qrImage);
+        }
+    });
+    
+    function updateBotStatus(status) {
+        const content = document.getElementById('bot-status-content');
+        const clientContent = document.getElementById('client-info-content');
+        
+        let statusClass = 'status-disconnected';
+        let statusText = 'غير متصل';
+        let statusIcon = 'fa-times-circle';
+        
+        switch(status.status) {
+            case 'ready':
+                statusClass = 'status-ready';
+                statusText = 'متصل وجاهز';
+                statusIcon = 'fa-check-circle';
+                break;
+            case 'qr':
+                statusClass = 'status-qr';
+                statusText = 'في انتظار مسح QR Code';
+                statusIcon = 'fa-qrcode';
+                break;
+            case 'initializing':
+                statusClass = 'status-initializing';
+                statusText = 'جاري التهيئة';
+                statusIcon = 'fa-spinner fa-spin';
+                break;
+        }
+        
+        content.innerHTML = `
+            <div class="text-center py-3">
+                <i class="fas ${statusIcon} fa-4x mb-3" style="color: ${status.isReady ? '#28a745' : '#ffc107'}"></i>
+                <h4 class="${statusClass}">${statusText}</h4>
+                ${status.reconnectAttempts > 0 ? `<p class="text-muted small">محاولات إعادة الاتصال: ${status.reconnectAttempts}</p>` : ''}
+            </div>
+        `;
+        
+        // معلومات العميل
+        if (status.clientInfo) {
+            clientContent.innerHTML = `
+                <table class="table table-borderless">
+                    <tr>
+                        <td><i class="fas fa-phone"></i> رقم الهاتف:</td>
+                        <td><strong>${status.clientInfo.phoneNumber || 'غير متاح'}</strong></td>
+                    </tr>
+                    <tr>
+                        <td><i class="fas fa-user"></i> الاسم:</td>
+                        <td><strong>${status.clientInfo.pushname || 'غير متاح'}</strong></td>
+                    </tr>
+                    <tr>
+                        <td><i class="fas fa-mobile-alt"></i> المنصة:</td>
+                        <td><strong>${status.clientInfo.platform || 'غير متاح'}</strong></td>
+                    </tr>
+                </table>
+            `;
+        } else {
+            clientContent.innerHTML = `
+                <div class="text-center py-4 text-muted">
+                    <i class="fas fa-user-slash fa-3x mb-3"></i>
+                    <p>لا توجد معلومات متاحة</p>
+                </div>
+            `;
+        }
+        
+        // إظهار QR إذا كان متاحاً
+        if (status.status === 'qr' && status.hasQR) {
+            fetch('/api/qr')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.data.qrImage) {
+                        showQRModal(data.data.qrImage);
+                    }
+                });
+        }
+    }
+    
+    function updateStats(stats) {
+        document.getElementById('total-messages').textContent = stats.total_messages || 0;
+        document.getElementById('messages-today').textContent = stats.messages_today || 0;
+        document.getElementById('qr-scans').textContent = stats.qr_scans || 0;
+    }
+    
+    function addRecentMessage(message) {
+        const container = document.getElementById('recent-messages');
+        
+        // إزالة رسالة "لا توجد رسائل"
+        if (container.querySelector('.text-muted')) {
+            container.innerHTML = '';
+        }
+        
+        const messageElement = document.createElement('div');
+        messageElement.className = 'message-card card mb-2';
+        messageElement.innerHTML = `
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <strong>${message.contactName || 'غير معروف'}</strong>
+                        <small class="text-muted d-block">${message.from}</small>
+                    </div>
+                    <small class="text-muted">${formatTime(message.timestamp)}</small>
+                </div>
+                <p class="mb-0 mt-2">${escapeHtml(message.body || '')}</p>
+                ${message.hasMedia ? '<span class="badge bg-info"><i class="fas fa-paperclip"></i> ملف مرفق</span>' : ''}
+            </div>
+        `;
+        
+        container.insertBefore(messageElement, container.firstChild);
+        
+        // الاحتفاظ بآخر 5 رسائل فقط
+        while (container.children.length > 5) {
+            container.removeChild(container.lastChild);
+        }
+    }
+    
+    function showQRModal(qrImage) {
+        const modal = new bootstrap.Modal(document.getElementById('qrModal'));
+        const content = document.getElementById('qr-modal-content');
+        
+        content.innerHTML = `
+            <img src="${qrImage}" alt="QR Code" class="img-fluid mb-3" style="max-width: 300px;">
+            <p class="text-muted">افتح واتساب على هاتفك وامسح هذا الرمز</p>
+        `;
+        
+        modal.show();
+    }
+    
+    function formatTime(timestamp) {
+        const date = new Date(timestamp * 1000);
+        return date.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // تحميل البيانات الأولية
+    fetch('/api/status')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateBotStatus(data.data);
+            }
+        });
+    
+    fetch('/api/stats')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateStats(data.data);
+            }
+        });
+    
+    fetch('/api/messages?limit=5')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data.length > 0) {
+                document.getElementById('recent-messages').innerHTML = '';
+                data.data.reverse().forEach(message => {
+                    addRecentMessage(message);
+                });
+            }
+        });
+</script>
+{% endblock %}
