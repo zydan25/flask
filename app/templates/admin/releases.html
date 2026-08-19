@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>الإصدارات</h1>{% for r in rows %}<div class='card'><div class='row'><div><b>v{{r.version}}</b><span>{{r.status}}</span></div><code>{{r.checksum}}</code></div><p>{{r.notes}}</p></div>{% endfor %}{% endblock %}
