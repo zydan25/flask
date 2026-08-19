@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 from werkzeug.security import check_password_hash
 
 from ..extensions import db
-from ..models import DeviceRegistration, RuntimeEvent, RuntimeRelease, SyncOperation
+from ..models import DataRecord, DeviceRegistration, RuntimeEvent, SyncOperation
 from ..services.data_service import (
     create_record,
     delete_record,
@@ -25,8 +25,7 @@ _REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30
 
 
 def _auth_state(app):
-    state = (app.config_json or {}).get('_runtime_auth') or {}
-    return state
+    return (app.config_json or {}).get('_runtime_auth') or {}
 
 
 def _hash_token(token):
@@ -52,14 +51,12 @@ def _issue_session(app):
     app.config_json = config
     db.session.add(app)
     db.session.commit()
-    return access_token, refresh_token, state
+    return access_token, refresh_token
 
 
 def _access_token_valid(app, token):
     state = _auth_state(app)
-    if not state:
-        return False
-    if not _constant_hash_compare(_hash_token(token), state.get('access_hash')):
+    if not state or not _constant_hash_compare(_hash_token(token), state.get('access_hash')):
         return False
     try:
         expires = datetime.fromisoformat(state['access_expires_at'])
@@ -87,12 +84,7 @@ def health():
     if not app:
         return jsonify(status='down', error='application_not_found'), 404
     release = current_release(app)
-    return jsonify(
-        status='ok',
-        app=app.slug,
-        runtime_schema=release.schema_version if release else None,
-        release=release.version if release else None,
-    )
+    return jsonify(status='ok', app=app.slug, runtime_schema=release.schema_version if release else None, release=release.version if release else None)
 
 
 @bp.get('/bootstrap')
@@ -156,34 +148,20 @@ def refresh_auth():
     refresh_token = str(data.get('refresh_token', '')).strip()
     if not refresh_token:
         return jsonify(error='missing_refresh_token'), 400
-
     state = _auth_state(app)
     valid = False
     if state:
         try:
             expires = datetime.fromisoformat(state['refresh_expires_at'])
-            valid = (
-                datetime.now(timezone.utc) < expires
-                and _constant_hash_compare(_hash_token(refresh_token), state.get('refresh_hash'))
-            )
+            valid = datetime.now(timezone.utc) < expires and _constant_hash_compare(_hash_token(refresh_token), state.get('refresh_hash'))
         except (KeyError, ValueError):
             valid = False
-
     if not valid:
-        # Permit the configured runtime key as the one-time bootstrap credential.
         valid = bool(app.runtime_key_hash and check_password_hash(app.runtime_key_hash, refresh_token))
-
     if not valid:
         return jsonify(error='invalid_refresh_token'), 401
-
-    access_token, rotated_refresh, state = _issue_session(app)
-    return jsonify(
-        access_token=access_token,
-        refresh_token=rotated_refresh,
-        token_type='Bearer',
-        expires_in=_ACCESS_TTL_SECONDS,
-        refresh_expires_in=_REFRESH_TTL_SECONDS,
-    )
+    access_token, rotated_refresh = _issue_session(app)
+    return jsonify(access_token=access_token, refresh_token=rotated_refresh, token_type='Bearer', expires_in=_ACCESS_TTL_SECONDS, refresh_expires_in=_REFRESH_TTL_SECONDS)
 
 
 @bp.get('/data/<model_slug>')
@@ -240,7 +218,6 @@ def data_item(model_slug, record_key):
     model = get_model(app, model_slug)
     if not model:
         return jsonify(error='data_model_not_found'), 404
-    from ..models import DataRecord
     record = DataRecord.query.filter_by(model_id=model.id, record_key=record_key).first()
     if request.method == 'GET':
         if not record or record.deleted:
@@ -278,19 +255,91 @@ def sync():
         return jsonify(error='application_not_found'), 404
     if not authorized(app):
         return jsonify(error='unauthorized'), 401
+
     results = []
     for item in data.get('operations') or []:
         op_id = str(item.get('operation_id', '')).strip()
         if not op_id:
             results.append({'status': 'rejected', 'error': 'missing_operation_id'})
             continue
+
         existing = SyncOperation.query.filter_by(operation_id=op_id).first()
         if existing:
             results.append({'operation_id': op_id, 'status': existing.status, 'result': existing.result_json or {}, 'server_version': existing.server_version})
             continue
-        op = SyncOperation(application_id=app.id, operation_id=op_id, entity=str(item.get('entity', '')), entity_id=str(item.get('entity_id', '')), operation=str(item.get('operation', 'update')), base_version=int(item.get('base_version') or 0), payload_json=item.get('payload') or {}, status='acknowledged', server_version=int(item.get('base_version') or 0) + 1)
+
+        model = get_model(app, str(item.get('entity', '')).strip())
+        if not model:
+            results.append({'operation_id': op_id, 'status': 'rejected', 'error': 'data_model_not_found'})
+            continue
+
+        entity_id = str(item.get('entity_id', '')).strip()
+        operation = str(item.get('operation', 'update')).lower()
+        payload = item.get('payload') or {}
+        try:
+            base_version = int(item.get('base_version') or 0)
+        except (TypeError, ValueError):
+            results.append({'operation_id': op_id, 'status': 'rejected', 'error': 'invalid_base_version'})
+            continue
+
+        record = DataRecord.query.filter_by(model_id=model.id, record_key=entity_id).first()
+        status = 'acknowledged'
+        result_payload = {}
+        server_version = None
+        if operation == 'create':
+            record, errors, created_status = create_record(model, entity_id, payload)
+            if errors:
+                status = 'rejected'; result_payload = {'error': 'validation_error', 'details': errors}
+            elif created_status == 'exists':
+                status = 'conflict'; result_payload = {'server': serialize_record(record)}
+            else:
+                server_version = record.version; result_payload = {'record': serialize_record(record)}
+        elif operation in ('update', 'upsert'):
+            if record is None:
+                if operation == 'upsert':
+                    record, errors, _ = create_record(model, entity_id, payload)
+                    if errors:
+                        status = 'rejected'; result_payload = {'error': 'validation_error', 'details': errors}
+                    else:
+                        server_version = record.version; result_payload = {'record': serialize_record(record)}
+                else:
+                    status = 'rejected'; result_payload = {'error': 'record_not_found'}
+            else:
+                record, errors, update_status = update_record(model, record, payload, base_version or None)
+                if errors:
+                    status = 'rejected'; result_payload = {'error': 'validation_error', 'details': errors}
+                elif update_status == 'conflict':
+                    status = 'conflict'; result_payload = {'server': serialize_record(record)}
+                else:
+                    server_version = record.version; result_payload = {'record': serialize_record(record)}
+        elif operation == 'delete':
+            if record is None:
+                status = 'rejected'; result_payload = {'error': 'record_not_found'}
+            else:
+                record, delete_status = delete_record(record, base_version or None)
+                if delete_status == 'conflict':
+                    status = 'conflict'; result_payload = {'server': serialize_record(record)}
+                else:
+                    server_version = record.version; result_payload = {'record': serialize_record(record)}
+        else:
+            status = 'rejected'; result_payload = {'error': 'unsupported_operation'}
+
+        op = SyncOperation(
+            application_id=app.id,
+            operation_id=op_id,
+            entity=model.slug,
+            entity_id=entity_id,
+            operation=operation,
+            base_version=base_version,
+            payload_json=payload,
+            status=status,
+            server_version=server_version,
+            result_json=result_payload,
+            error_message=result_payload.get('error', ''),
+        )
         db.session.add(op)
-        results.append({'operation_id': op_id, 'status': 'acknowledged', 'server_version': op.server_version})
+        results.append({'operation_id': op_id, 'status': status, 'result': result_payload, 'server_version': server_version})
+
     db.session.commit()
     return jsonify(schema_version=1, results=results, partial=any(r.get('status') != 'acknowledged' for r in results))
 
@@ -316,9 +365,7 @@ def _register_push_token(data):
         return jsonify(error='missing_push_token'), 400
     device_id = str(data.get('device_id') or hashlib.sha256(token.encode('utf-8')).hexdigest()[:32])
     row = DeviceRegistration.query.filter_by(application_id=app.id, device_id=device_id).first() or DeviceRegistration(
-        application_id=app.id,
-        device_id=device_id,
-        platform=str(data.get('platform') or 'unknown'),
+        application_id=app.id, device_id=device_id, platform=str(data.get('platform') or 'unknown')
     )
     row.push_token = token
     row.platform = str(data.get('platform') or row.platform or 'unknown')
