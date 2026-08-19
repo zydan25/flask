@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask
 from werkzeug.security import generate_password_hash
 from .extensions import db, migrate, login_manager, sock
 from .blueprints.main import bp as main_bp
@@ -6,6 +6,7 @@ from .blueprints.admin import bp as admin_bp
 from .blueprints.runtime import bp as runtime_bp
 from .blueprints.gateway import bp as gateway_bp
 from .blueprints.webhooks import bp as webhooks_bp
+from .blueprints import ws as _ws  # noqa: F401 - registers the Flask-Sock route
 from .models import Application, User
 from config import Config
 
@@ -32,10 +33,21 @@ def create_app(config_object=Config):
 def _seed(app):
     admin = User.query.filter_by(email=app.config['ADMIN_EMAIL']).first()
     if not admin:
-        admin = User(email=app.config['ADMIN_EMAIL'], full_name='Administrator', role='admin', is_active_flag=True, password_hash=generate_password_hash(app.config['ADMIN_PASSWORD']))
+        admin = User(
+            email=app.config['ADMIN_EMAIL'],
+            full_name='Administrator',
+            role='admin',
+            is_active_flag=True,
+            password_hash=generate_password_hash(app.config['ADMIN_PASSWORD']),
+        )
         db.session.add(admin)
     runtime_app = Application.query.filter_by(slug=app.config['DEFAULT_APP_SLUG']).first()
     if not runtime_app:
-        runtime_app = Application(slug=app.config['DEFAULT_APP_SLUG'], name='Flutter Server Runtime', package_name='com.alattab.dynamicapp', config_json={'client_mode':'server_driven'})
+        runtime_app = Application(
+            slug=app.config['DEFAULT_APP_SLUG'],
+            name='Flutter Server Runtime',
+            package_name='com.alattab.dynamicapp',
+            config_json={'client_mode': 'server_driven'},
+        )
         db.session.add(runtime_app)
     db.session.commit()

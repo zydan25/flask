@@ -3,6 +3,7 @@ from werkzeug.security import check_password_hash
 from ..extensions import db
 from ..models import RuntimeRelease,SyncOperation,RuntimeEvent,DeviceRegistration
 from ..services.runtime_service import get_application,current_release
+from ..services.data_service import get_model,list_records,create_record,update_record,delete_record,serialize_record
 bp=Blueprint('runtime',__name__,url_prefix='/runtime')
 
 def authorized(app):
@@ -10,9 +11,13 @@ def authorized(app):
     token=request.headers.get('X-Runtime-Key') or request.headers.get('Authorization','').removeprefix('Bearer ').strip()
     return bool(token and check_password_hash(app.runtime_key_hash,token))
 
+def app_or_404():
+    app=get_application(request.args.get('app','flutter-app'))
+    return app
+
 @bp.get('/bootstrap')
 def bootstrap():
-    app=get_application(request.args.get('app','flutter-app'))
+    app=app_or_404()
     if not app:return jsonify(error='application_not_found'),404
     release=current_release(app)
     if not release:return jsonify(error='no_published_release'),503
@@ -21,7 +26,7 @@ def bootstrap():
 
 @bp.get('/manifest')
 def manifest():
-    app=get_application(request.args.get('app','flutter-app'))
+    app=app_or_404()
     if not app:return jsonify(error='application_not_found'),404
     release=current_release(app)
     if not release:return jsonify(error='no_published_release'),503
@@ -29,12 +34,66 @@ def manifest():
 
 @bp.get('/resources')
 def resources():
-    app=get_application(request.args.get('app','flutter-app'))
+    app=app_or_404()
     if not app:return jsonify(error='application_not_found'),404
     release=current_release(app)
     if not release:return jsonify(error='no_published_release'),503
     keys=[k for k in request.args.get('keys','').split(',') if k]; payload=release.resources_json or {}; payload={k:payload[k] for k in keys if k in payload} if keys else payload
     return jsonify(schema_version=release.schema_version,version=release.version,resources=payload)
+
+@bp.get('/data/<model_slug>')
+def data_list(model_slug):
+    app=app_or_404()
+    if not app:return jsonify(error='application_not_found'),404
+    if not authorized(app):return jsonify(error='unauthorized'),401
+    model=get_model(app,model_slug)
+    if not model:return jsonify(error='data_model_not_found'),404
+    try: page=max(1,int(request.args.get('page',1))); per_page=min(100,max(1,int(request.args.get('per_page',25))))
+    except ValueError:return jsonify(error='invalid_pagination'),400
+    rows,total=list_records(model,page,per_page,request.args.get('include_deleted')=='true')
+    return jsonify(model={'slug':model.slug,'schema':model.schema_json or {},'version':model.updated_at.isoformat() if model.updated_at else None},data=rows,page=page,per_page=per_page,total=total)
+
+@bp.post('/data/<model_slug>')
+def data_create(model_slug):
+    app=app_or_404()
+    if not app:return jsonify(error='application_not_found'),404
+    if not authorized(app):return jsonify(error='unauthorized'),401
+    model=get_model(app,model_slug)
+    if not model:return jsonify(error='data_model_not_found'),404
+    body=request.get_json(silent=True) or {}; record_key=str(body.get('id') or body.get('key') or '').strip(); payload=body.get('data')
+    if not record_key:return jsonify(error='missing_record_key'),400
+    if not isinstance(payload,dict):return jsonify(error='invalid_data'),400
+    record,errors,status=create_record(model,record_key,payload)
+    if errors:return jsonify(error='validation_error',details=errors),422
+    if status=='exists':return jsonify(error='already_exists',record=serialize_record(record)),409
+    return jsonify(record=serialize_record(record)),201
+
+@bp.route('/data/<model_slug>/<record_key>',methods=['GET','PUT','PATCH','DELETE'])
+def data_item(model_slug,record_key):
+    app=app_or_404()
+    if not app:return jsonify(error='application_not_found'),404
+    if not authorized(app):return jsonify(error='unauthorized'),401
+    model=get_model(app,model_slug)
+    if not model:return jsonify(error='data_model_not_found'),404
+    from ..models import DataRecord
+    record=DataRecord.query.filter_by(model_id=model.id,record_key=record_key).first()
+    if request.method=='GET':
+        if not record or record.deleted:return jsonify(error='record_not_found'),404
+        return jsonify(record=serialize_record(record))
+    if not record:return jsonify(error='record_not_found'),404
+    base_version=request.headers.get('If-Match') or (request.get_json(silent=True) or {}).get('base_version')
+    try: base_version=int(base_version) if base_version not in (None,'') else None
+    except ValueError:return jsonify(error='invalid_base_version'),400
+    if request.method=='DELETE':
+        record,status=delete_record(record,base_version)
+        if status=='conflict':return jsonify(error='conflict',server=serialize_record(record)),409
+        return jsonify(record=serialize_record(record))
+    body=request.get_json(silent=True) or {}; payload=body.get('data',body)
+    if not isinstance(payload,dict):return jsonify(error='invalid_data'),400
+    record,errors,status=update_record(model,record,payload,base_version)
+    if errors:return jsonify(error='validation_error',details=errors),422
+    if status=='conflict':return jsonify(error='conflict',server=serialize_record(record)),409
+    return jsonify(record=serialize_record(record))
 
 @bp.post('/sync')
 def sync():

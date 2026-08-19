@@ -14,8 +14,10 @@
 - ✅ /runtime/resources
 - ✅ /runtime/sync
 - ✅ /runtime/events/ack
-- ✅ device registration
-- ✅ WebSocket boundary
+- ✅ /runtime/devices/register
+- ✅ WebSocket boundary registered at app startup
+- ✅ managed Data API: list/create/read/update/patch/delete
+- ✅ record version/checksum + optimistic conflict responses
 
 ## UI / STAC
 - ✅ full raw STAC screen editing
@@ -35,14 +37,16 @@
 - ✅ managed Data Models
 - ✅ managed Data Records
 - ✅ version/checksum
-- ⬜ query/filter/pagination API
+- ✅ query + pagination API
+- ✅ schema required/type validation foundation
+- ⬜ advanced filter/sort/query DSL
 - ⬜ schema migration UI
 
 ## API Gateway
 - ✅ API profiles
 - ✅ endpoint definitions
 - ✅ host allowlist + TLS policy
-- ⬜ connectivity tester
+- ⬜ connectivity tester UI
 - ⬜ secret vault
 - ⬜ rate limiting
 
@@ -54,7 +58,8 @@
 
 ## Realtime
 - ✅ persisted events
-- ✅ websocket boundary
+- ✅ websocket route registered
+- ✅ websocket ACK handling foundation
 - ✅ device token registration
 - ⬜ broker/pubsub
 - ⬜ FCM/APNs server delivery
@@ -62,7 +67,14 @@
 ## Security / Quality
 - ✅ no .env tracked
 - ✅ outbound proxy restrictions
-- ⬜ CSRF
+- 🟡 CSRF protection
 - ⬜ rate limiting
-- ⬜ comprehensive Flutter contract suite
+- 🟡 comprehensive Flutter contract suite
 - ⬜ production deployment CI/CD
+- ⬜ database migration scripts / schema upgrade policy
+
+## Next verification gate
+1. GitHub Actions: compileall + pytest must pass on the latest head.
+2. Verify Runtime bootstrap → manifest → resources → data CRUD → sync → event ACK.
+3. Connect this backend to the existing Flutter Runtime using the versioned endpoints.
+4. Then add advanced admin builders, API connectivity tester, workflow validator and production security/deployment hardening.
